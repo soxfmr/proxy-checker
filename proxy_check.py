@@ -1,29 +1,90 @@
-import urllib2, socket
-
-socket.setdefaulttimeout(180)
+import requests
+import logging
+import time
+import re
+import threading
 
 # read the list of proxy IPs in proxyList
-proxyList = ['172.30.1.1:8080', '172.30.3.3:8080'] # there are two sample proxy ip
+proxyList = [] # there are two sample proxy ip
 
-def is_bad_proxy(pip):    
-    try:        
-        proxy_handler = urllib2.ProxyHandler({'http': pip})        
-        opener = urllib2.build_opener(proxy_handler)
-        opener.addheaders = [('User-agent', 'Mozilla/5.0')]
-        urllib2.install_opener(opener)        
-        req=urllib2.Request('http://www.google.com')  # change the url address here
-        sock=urllib2.urlopen(req)
-    except urllib2.HTTPError, e:        
-        print 'Error code: ', e.code
-        return e.code
-    except Exception, detail:
+ACCESS_URL = 'http://ip.cn'
+ACCESS_TIMEOUT = 5
+ACCESS_THREAD = 8
 
-        print "ERROR:", detail
-        return 1
-    return 0
+ACCESS_MUTEX = threading.Lock()
 
-for item in proxyList:
-    if is_bad_proxy(item):
-        print "Bad Proxy", item
-    else:
-        print item, "is working"
+def import_proxies(fn):
+    proxyList = []
+    pattern = re.compile('https:\/\/', re.IGNORECASE)
+
+    with open(fn, 'r') as handle:
+        for line in handle:
+            try:
+                url, port = line.strip().split(' ')
+                if (url != '' and port != ''):
+                    schema = 'https' if pattern.search(url) != None else 'http'
+                    if (not schema.startswith('http')):
+                        url = '%s://%s' % (schema, url)
+
+                    proxyList.append({ schema : '%s:%s' % (url, port) })
+            except Exception:
+                pass
+
+        handle.close()
+
+    return proxyList
+
+
+def reachable(proxy):
+    try:
+        time_start = time.time()
+        res = requests.get(ACCESS_URL, proxies=proxy, headers={'User-agent' : 'Chrome/51.0'}, timeout = ACCESS_TIMEOUT)
+        if res.status_code == 200:
+            logging.debug('IP: %s is reachable, timeout: %f' % (proxy, time.time() - time_start))
+    except Exception, e:
+        return False
+    return True
+
+def dispatch(proxyList):
+    for item in proxyList:
+        result = reachable(item)
+
+        ACCESS_MUTEX.acquire()
+        if result:
+            print item, "is working"
+        else:
+            print "Bad Proxy", item
+        ACCESS_MUTEX.release()
+
+def main():
+    threads = ACCESS_THREAD
+    proxyList = import_proxies('ip.txt')
+
+    total = len(proxyList)
+    if total == 0:
+        return
+
+    missions = total / threads
+    remains = total % threads
+
+    if (missions == 0):
+        threads = total
+        missions = 1
+    elif remains > 0:
+        threads += 1
+
+    if missions == 0:
+        return
+
+    threadPool = []
+    for i in range(0, threads):
+        offset = i * missions
+        dispatcher = threading.Thread(target=dispatch, args=(proxyList[offset:missions + offset],))
+        threadPool.append(dispatcher)
+
+    for dispatcher in threadPool:
+        #dispatcher.setDaemon(True)
+        dispatcher.start()
+
+if __name__ == '__main__':
+    main()
